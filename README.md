@@ -75,7 +75,30 @@ go run ./example
 
 Это только пример структуры: не подставляй буквальные значения из примера. Не публикуй файл токенов — он содержит секреты.
 
-Если для второго номера уже создана неполная запись с пустым `refreshToken`, сначала сделай резервную копию файла. Затем удали только запись с номером второго телефона (не весь файл и не запись первого номера), чтобы при следующем запуске программа запросила полноценную авторизацию второго аккаунта.
+Если для второго номера уже создана неполная запись с пустым `refreshToken`, сначала сделай резервную копию и удали только запись второго номера. Это можно сделать безопасно так:
+
+```sh
+cp -p "$LKDR_TOKENS_FILE" "$LKDR_TOKENS_FILE.bak"
+python3 - "$LKDR_TOKENS_FILE" "$LKDR_PHONE_2" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, phone = Path(sys.argv[1]), sys.argv[2]
+data = json.loads(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict) or "token" in data:
+    raise SystemExit("Ожидался phone-keyed JSON; файл не изменён")
+if phone not in data:
+    raise SystemExit(f"Запись {phone} не найдена; файл не изменён")
+del data[phone]
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(path)
+print(f"Удалена только запись {phone}; остальные аккаунты сохранены")
+PY
+```
+
+После этого запусти программу снова: для второго номера должна начаться полноценная авторизация. Резервную копию не удаляй, пока не убедишься, что оба аккаунта работают.
 
 ## Обновление токена из HAR
 

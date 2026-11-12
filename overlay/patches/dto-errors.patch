@@ -1,0 +1,27 @@
+--- a/dto.go
++++ b/dto.go
+@@ -150,6 +150,8 @@
+ 	SmsVerificationNotExpired ErrorCode = "registration.sms.verification.not.expired"
+ 	BlockedCaptcha            ErrorCode = "blocked.captcha"
+ 	ReceiptFiscalDataNotFound ErrorCode = "receipt.fiscaldata.not.found.dr"
++	ReceiptFiscalDataNotFoundV2 ErrorCode = "receipt.fiscal.data.not.found"
++	ReceiptFiscalDataInvalidKKT ErrorCode = "receipt.fiscal.data.invalid.kkt"
+ )
+@@ -169,11 +171,15 @@
+ func IsDataNotFound(err error) bool {
+ 	var e Error
+-	if errors.As(err, &e); e.Code == ReceiptFiscalDataNotFound {
+-		return true
+-	}
+-
+-	return false
++	if !errors.As(err, &e) {
++		return false
++	}
++	return e.Code == ReceiptFiscalDataNotFound || e.Code == ReceiptFiscalDataNotFoundV2
++}
++
++func IsInvalidKKT(err error) bool {
++	var e Error
++	return errors.As(err, &e) && e.Code == ReceiptFiscalDataInvalidKKT
+ }

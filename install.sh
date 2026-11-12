@@ -23,6 +23,7 @@ cp "$SCRIPT_DIR/overlay/example/main.go" "$DEST/example/main.go"
 
 echo "Применяю исправления кодов ошибок ФД..."
 python3 "$SCRIPT_DIR/overlay/tools/patch_lkdr_dto.py" "$DEST"
+gofmt -w "$DEST/example/main.go" "$DEST/dto.go" "$DEST/dto_test.go"
 mkdir -p "$DEST/tools"
 cp "$SCRIPT_DIR/overlay/tools/update_lkdr_token.py" "$DEST/tools/update_lkdr_token.py"
 chmod 700 "$DEST/tools/update_lkdr_token.py"

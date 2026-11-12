@@ -71,7 +71,7 @@ func (s jsonTokenStorage) UpdateTokens(_ context.Context, phone string, tokens *
 	}
 
 	// Migrate an old flat token file into the phone-keyed format.
-	if _, flat := root["token"]; flat {
+	if _, flat := root["token"]; flat && phone == s.legacyPhone {
 		delete(root, "token")
 		delete(root, "refreshToken")
 		delete(root, "tokenExpireIn")

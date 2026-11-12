@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/caarlos0/env"
 	"github.com/jfk9w-go/based"
@@ -18,7 +19,7 @@ import (
 )
 
 type jsonTokenStorage struct {
-	path string
+	path        string
 	legacyPhone string
 }
 
@@ -131,25 +132,33 @@ func (a *consoleAuthorizer) GetCaptchaToken(_ context.Context, userAgent, siteKe
 	fmt.Println("User-Agent:", userAgent)
 	fmt.Print("Вставь полученный CAPTCHA-токен: ")
 	line, err := a.reader.ReadString('\n')
-	if err != nil { return "", errors.Wrap(err, "read CAPTCHA token") }
+	if err != nil {
+		return "", errors.Wrap(err, "read CAPTCHA token")
+	}
 	token := strings.TrimSpace(line)
-	if token == "" { return "", errors.New("CAPTCHA token is empty") }
+	if token == "" {
+		return "", errors.New("CAPTCHA token is empty")
+	}
 	return token, nil
 }
 
 func (a *consoleAuthorizer) GetConfirmationCode(_ context.Context, phone string) (string, error) {
 	fmt.Printf("Введи SMS-код для %s: ", phone)
 	line, err := a.reader.ReadString('\n')
-	if err != nil { return "", errors.Wrap(err, "read SMS code") }
+	if err != nil {
+		return "", errors.Wrap(err, "read SMS code")
+	}
 	code := strings.TrimSpace(line)
-	if code == "" { return "", errors.New("SMS code is empty") }
+	if code == "" {
+		return "", errors.New("SMS code is empty")
+	}
 	return code, nil
 }
 
 type exportedReceipt struct {
-	Receipt    lkdr.Receipt       `json:"receipt"`
-	FiscalData *lkdr.FiscalDataOut `json:"fiscalData,omitempty"`
-	DetailError string             `json:"detailError,omitempty"`
+	Receipt     lkdr.Receipt        `json:"receipt"`
+	FiscalData  *lkdr.FiscalDataOut `json:"fiscalData,omitempty"`
+	DetailError string              `json:"detailError,omitempty"`
 }
 
 type exportFile struct {
@@ -197,13 +206,33 @@ func saveExport(path string, data *exportFile) error {
 func loadExport(path string) (*exportFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) { return nil, nil }
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, errors.Wrap(err, "read previous export")
 	}
 	var result exportFile
-	if err := json.Unmarshal(data, &result); err != nil { return nil, errors.Wrap(err, "decode previous export") }
-	if result.Receipts == nil { result.Receipts = make([]exportedReceipt, 0) }
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, errors.Wrap(err, "decode previous export")
+	}
+	if result.Receipts == nil {
+		result.Receipts = make([]exportedReceipt, 0)
+	}
 	return &result, nil
+}
+
+func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	if max == 1 {
+		return "…"
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone string) error {
@@ -211,11 +240,13 @@ func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone stri
 	const detailTimeout = 60 * time.Second
 
 	result, err := loadExport(output)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if result == nil {
 		result = &exportFile{
 			ExportedAt: based.StandardClock.Now().UTC().Format("2006-01-02T15:04:05Z"),
-			Receipts: make([]exportedReceipt, 0),
+			Receipts:   make([]exportedReceipt, 0),
 		}
 	}
 	fmt.Printf("\nАккаунт %s\nФайл экспорта: %s\n", phone, output)
@@ -226,7 +257,9 @@ func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone stri
 		fmt.Println("Загружаю список чеков...")
 		seen := make(map[string]struct{}, len(result.Receipts))
 		for _, item := range result.Receipts {
-			if item.Receipt.Key != "" { seen[item.Receipt.Key] = struct{}{} }
+			if item.Receipt.Key != "" {
+				seen[item.Receipt.Key] = struct{}{}
+			}
 		}
 		offset := 0
 		for {
@@ -235,28 +268,44 @@ func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone stri
 				return err
 			}
 			page, err := client.Receipt(ctx, &lkdr.ReceiptIn{
-				Limit: pageSize, Offset: offset, OrderBy: "RECEIVE_DATE:DESC",
+				Limit:   pageSize,
+				Offset:  offset,
+				OrderBy: "RECEIVE_DATE:DESC",
 			})
 			if err != nil {
 				_ = saveExport(output, result)
 				return errors.Wrapf(err, "get receipts page at offset %d", offset)
 			}
+			added := 0
 			for _, receipt := range page.Receipts {
-				if receipt.Key == "" { continue }
-				if _, exists := seen[receipt.Key]; exists { continue }
+				if receipt.Key == "" {
+					continue
+				}
+				if _, exists := seen[receipt.Key]; exists {
+					continue
+				}
 				seen[receipt.Key] = struct{}{}
 				result.Receipts = append(result.Receipts, exportedReceipt{Receipt: receipt})
+				added++
 			}
-			if err := saveExport(output, result); err != nil { return err }
+			if err := saveExport(output, result); err != nil {
+				return err
+			}
 			offset += len(page.Receipts)
-			fmt.Printf("Получено записей: %d\n", len(result.Receipts))
-			if !page.HasMore || len(page.Receipts) == 0 { break }
+			fmt.Printf("  страница offset=%d → +%d новых, всего %d (hasMore=%v)\n",
+				offset-len(page.Receipts), added, len(result.Receipts), page.HasMore)
+			if !page.HasMore || len(page.Receipts) == 0 {
+				break
+			}
 		}
 		result.ListComplete = true
-		if err := saveExport(output, result); err != nil { return err }
+		if err := saveExport(output, result); err != nil {
+			return err
+		}
 		fmt.Printf("Список загружен: %d чеков\n", len(result.Receipts))
 	}
 
+	fmt.Println("\nЗагрузка подробностей:")
 	var successCount, errorCount, skippedCount int
 	for i := range result.Receipts {
 		if err := ctx.Err(); err != nil {
@@ -269,90 +318,130 @@ func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone stri
 			skippedCount++
 			continue
 		}
-		fmt.Printf("[%d/%d] Запрашиваю подробности чека %s...\n", i+1, len(result.Receipts), receipt.Receipt.Key)
+
+		r := receipt.Receipt
+		fmt.Printf("[%d/%d] %v | %-28s | %8v ₽\n",
+			i+1, len(result.Receipts),
+			r.CreatedDate,
+			truncate(r.KktOwner, 28),
+			r.TotalSum,
+		)
+
 		requestCtx, cancel := context.WithTimeout(ctx, detailTimeout)
-		details, requestErr := client.FiscalData(requestCtx, &lkdr.FiscalDataIn{Key: receipt.Receipt.Key})
+		details, requestErr := client.FiscalData(requestCtx, &lkdr.FiscalDataIn{Key: r.Key})
 		cancel()
+
 		if requestErr != nil {
 			receipt.FiscalData = nil
 			receipt.DetailError = requestErr.Error()
 			errorCount++
-			fmt.Printf("  Ошибка: %v\n", requestErr)
+			fmt.Printf("  ✗ %v\n", requestErr)
 		} else {
 			receipt.FiscalData = details
 			receipt.DetailError = ""
 			if details != nil {
 				successCount++
-				fmt.Println("  Подробности получены")
+				name := ""
+				if len(details.Items) > 0 {
+					name = details.Items[0].Name
+				}
+				if name != "" {
+					fmt.Printf("  ✓ %s\n", truncate(name, 70))
+				} else {
+					fmt.Println("  ✓ подробности получены")
+				}
 			} else {
 				receipt.DetailError = "пустой ответ FiscalData"
 				errorCount++
-				fmt.Println("  API вернул пустые подробности")
+				fmt.Println("  ✗ API вернул пустые подробности")
 			}
 		}
-		if err := saveExport(output, result); err != nil { return err }
+		if err := saveExport(output, result); err != nil {
+			return err
+		}
 	}
 
 	result.DetailsComplete = true
 	for _, item := range result.Receipts {
-		if item.FiscalData == nil { result.DetailsComplete = false; break }
+		if item.FiscalData == nil {
+			result.DetailsComplete = false
+			break
+		}
 	}
-	if err := saveExport(output, result); err != nil { return err }
+	if err := saveExport(output, result); err != nil {
+		return err
+	}
 	fmt.Printf("\nИтоги для %s:\n", phone)
-	fmt.Printf("Всего чеков: %d\n", len(result.Receipts))
-	fmt.Printf("Успешно загружено или уже было: %d\n", successCount)
-	fmt.Printf("Пропущено ранее загруженных: %d\n", skippedCount)
-	fmt.Printf("Ошибок в этой попытке: %d\n", errorCount)
-	fmt.Printf("Все подробности загружены: %t\n", result.DetailsComplete)
-	fmt.Printf("Файл: %s\n", output)
+	fmt.Printf("  Всего чеков:                  %d\n", len(result.Receipts))
+	fmt.Printf("  Успешно / уже было:           %d\n", successCount)
+	fmt.Printf("  Пропущено (ранее загружены):  %d\n", skippedCount)
+	fmt.Printf("  Ошибок в этой попытке:        %d\n", errorCount)
+	fmt.Printf("  Все подробности загружены:    %t\n", result.DetailsComplete)
+	fmt.Printf("  Файл: %s\n", output)
 	return nil
 }
 
-type accountConfig struct { Phone, DeviceID, UserAgent, OutputFile string }
+type accountConfig struct {
+	Phone, DeviceID, UserAgent, OutputFile string
+}
 
 func runAccount(ctx context.Context, account accountConfig, tokensFile, legacyPhone string) error {
 	client, err := lkdr.NewClient(lkdr.ClientParams{
-		Phone: account.Phone,
-		Clock: based.StandardClock,
-		DeviceID: account.DeviceID,
-		UserAgent: account.UserAgent,
+		Phone:        account.Phone,
+		Clock:        based.StandardClock,
+		DeviceID:     account.DeviceID,
+		UserAgent:    account.UserAgent,
 		TokenStorage: jsonTokenStorage{path: tokensFile, legacyPhone: legacyPhone},
 	})
-	if err != nil { return errors.Wrap(err, "create LKDR client") }
+	if err != nil {
+		return errors.Wrap(err, "create LKDR client")
+	}
 	accountCtx := lkdr.WithAuthorizer(ctx, newConsoleAuthorizer())
 	return exportReceipts(accountCtx, client, account.OutputFile, account.Phone)
 }
 
 func main() {
 	var config struct {
-		Phone string `env:"LKDR_PHONE,required"`
-		TokensFile string `env:"LKDR_TOKENS_FILE,required"`
-		DeviceID string `env:"LKDR_DEVICE_ID,required"`
-		UserAgent string `env:"LKDR_USER_AGENT,required"`
-		OutputFile string `env:"LKDR_OUTPUT_FILE" envDefault:"receipts.json"`
-		Phone2 string `env:"LKDR_PHONE_2"`
-		DeviceID2 string `env:"LKDR_DEVICE_ID_2"`
-		UserAgent2 string `env:"LKDR_USER_AGENT_2"`
+		Phone       string `env:"LKDR_PHONE,required"`
+		TokensFile  string `env:"LKDR_TOKENS_FILE,required"`
+		DeviceID    string `env:"LKDR_DEVICE_ID,required"`
+		UserAgent   string `env:"LKDR_USER_AGENT,required"`
+		OutputFile  string `env:"LKDR_OUTPUT_FILE" envDefault:"receipts.json"`
+		Phone2      string `env:"LKDR_PHONE_2"`
+		DeviceID2   string `env:"LKDR_DEVICE_ID_2"`
+		UserAgent2  string `env:"LKDR_USER_AGENT_2"`
 		OutputFile2 string `env:"LKDR_OUTPUT_FILE_2" envDefault:"receipts_phone2.json"`
 	}
-	if err := env.Parse(&config); err != nil { panic(err) }
+	if err := env.Parse(&config); err != nil {
+		panic(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
 	accounts := []accountConfig{{
-		Phone: config.Phone, DeviceID: config.DeviceID,
-		UserAgent: config.UserAgent, OutputFile: config.OutputFile,
+		Phone:      config.Phone,
+		DeviceID:   config.DeviceID,
+		UserAgent:  config.UserAgent,
+		OutputFile: config.OutputFile,
 	}}
 	if strings.TrimSpace(config.Phone2) != "" {
 		deviceID2 := config.DeviceID2
-		if deviceID2 == "" { deviceID2 = config.DeviceID }
+		if deviceID2 == "" {
+			deviceID2 = config.DeviceID
+		}
 		userAgent2 := config.UserAgent2
-		if userAgent2 == "" { userAgent2 = config.UserAgent }
+		if userAgent2 == "" {
+			userAgent2 = config.UserAgent
+		}
 		accounts = append(accounts, accountConfig{
-			Phone: config.Phone2, DeviceID: deviceID2,
-			UserAgent: userAgent2, OutputFile: config.OutputFile2,
+			Phone:      config.Phone2,
+			DeviceID:   deviceID2,
+			UserAgent:  userAgent2,
+			OutputFile: config.OutputFile2,
 		})
 	}
+
 	seenPhones := make(map[string]struct{})
 	seenFiles := make(map[string]struct{})
 	for _, account := range accounts {
@@ -367,6 +456,7 @@ func main() {
 		}
 		seenFiles[account.OutputFile] = struct{}{}
 	}
+
 	failed := 0
 	for _, account := range accounts {
 		fmt.Println("\n========================================")

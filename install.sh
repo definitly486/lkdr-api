@@ -20,6 +20,12 @@ git clone --depth 1 https://github.com/jfk9w-go/lkdr-api.git "$DEST"
 
 echo "Применяю изменения..."
 cp "$SCRIPT_DIR/overlay/example/main.go" "$DEST/example/main.go"
+
+echo "Применяю исправления кодов ошибок ФД..."
+git -C "$DEST" apply --check "$SCRIPT_DIR/overlay/patches/dto-errors.patch"
+git -C "$DEST" apply --check "$SCRIPT_DIR/overlay/patches/dto-test.patch"
+git -C "$DEST" apply "$SCRIPT_DIR/overlay/patches/dto-errors.patch"
+git -C "$DEST" apply "$SCRIPT_DIR/overlay/patches/dto-test.patch"
 mkdir -p "$DEST/tools"
 cp "$SCRIPT_DIR/overlay/tools/update_lkdr_token.py" "$DEST/tools/update_lkdr_token.py"
 chmod 700 "$DEST/tools/update_lkdr_token.py"

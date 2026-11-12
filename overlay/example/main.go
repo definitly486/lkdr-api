@@ -19,6 +19,7 @@ import (
 
 type jsonTokenStorage struct {
 	path string
+	legacyPhone string
 }
 
 func (s jsonTokenStorage) LoadTokens(_ context.Context, phone string) (*lkdr.Tokens, error) {
@@ -39,7 +40,7 @@ func (s jsonTokenStorage) LoadTokens(_ context.Context, phone string) (*lkdr.Tok
 	// format written by update_lkdr_token.py.
 	raw, ok := root[phone]
 	if !ok {
-		if _, flat := root["token"]; flat {
+		if _, flat := root["token"]; flat && phone == s.legacyPhone {
 			raw = data
 			ok = true
 		}
@@ -309,13 +310,13 @@ func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone stri
 
 type accountConfig struct { Phone, DeviceID, UserAgent, OutputFile string }
 
-func runAccount(ctx context.Context, account accountConfig, tokensFile string) error {
+func runAccount(ctx context.Context, account accountConfig, tokensFile, legacyPhone string) error {
 	client, err := lkdr.NewClient(lkdr.ClientParams{
 		Phone: account.Phone,
 		Clock: based.StandardClock,
 		DeviceID: account.DeviceID,
 		UserAgent: account.UserAgent,
-		TokenStorage: jsonTokenStorage{path: tokensFile},
+		TokenStorage: jsonTokenStorage{path: tokensFile, legacyPhone: legacyPhone},
 	})
 	if err != nil { return errors.Wrap(err, "create LKDR client") }
 	accountCtx := lkdr.WithAuthorizer(ctx, newConsoleAuthorizer())
@@ -360,7 +361,7 @@ func main() {
 			os.Exit(2)
 		}
 		seenPhones[account.Phone] = struct{}{}
-		if _, exists := seenFiles[account.OutputFile]; exists {
+		if _, exists := seenFiles[filepath.Clean(account.OutputFile)]; exists {
 			fmt.Fprintf(os.Stderr, "Файл экспорта %s назначен нескольким аккаунтам\n", account.OutputFile)
 			os.Exit(2)
 		}
@@ -371,7 +372,7 @@ func main() {
 		fmt.Println("\n========================================")
 		fmt.Printf("Обработка телефона: %s\n", account.Phone)
 		fmt.Println("========================================")
-		if err := runAccount(ctx, account, config.TokensFile); err != nil {
+		if err := runAccount(ctx, account, config.TokensFile, config.Phone); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "Ошибка аккаунта %s: %v\n", account.Phone, err)
 		}

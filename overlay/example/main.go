@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env"
 	"github.com/jfk9w-go/based"
@@ -18,6 +19,7 @@ import (
 
 type jsonTokenStorage struct {
 	path string
+	legacyPhone string
 }
 
 func (s jsonTokenStorage) LoadTokens(_ context.Context, phone string) (*lkdr.Tokens, error) {
@@ -38,7 +40,7 @@ func (s jsonTokenStorage) LoadTokens(_ context.Context, phone string) (*lkdr.Tok
 	// format written by update_lkdr_token.py.
 	raw, ok := root[phone]
 	if !ok {
-		if _, flat := root["token"]; flat {
+		if _, flat := root["token"]; flat && phone == s.legacyPhone {
 			raw = data
 			ok = true
 		}
@@ -69,7 +71,7 @@ func (s jsonTokenStorage) UpdateTokens(_ context.Context, phone string, tokens *
 	}
 
 	// Migrate an old flat token file into the phone-keyed format.
-	if _, flat := root["token"]; flat {
+	if _, flat := root["token"]; flat && phone == s.legacyPhone {
 		delete(root, "token")
 		delete(root, "refreshToken")
 		delete(root, "tokenExpireIn")
@@ -116,7 +118,11 @@ func (s jsonTokenStorage) UpdateTokens(_ context.Context, phone string, tokens *
 	return nil
 }
 
-type consoleAuthorizer struct{}
+type consoleAuthorizer struct{ reader *bufio.Reader }
+
+func newConsoleAuthorizer() *consoleAuthorizer {
+	return &consoleAuthorizer{reader: bufio.NewReader(os.Stdin)}
+}
 
 func (a *consoleAuthorizer) GetCaptchaToken(_ context.Context, userAgent, siteKey, pageURL string) (string, error) {
 	fmt.Println("Для новой авторизации открой страницу ФНС в браузере и реши CAPTCHA:")
@@ -124,27 +130,19 @@ func (a *consoleAuthorizer) GetCaptchaToken(_ context.Context, userAgent, siteKe
 	fmt.Println("Site key:", siteKey)
 	fmt.Println("User-Agent:", userAgent)
 	fmt.Print("Вставь полученный CAPTCHA-токен: ")
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return "", errors.Wrap(err, "read CAPTCHA token")
-	}
+	line, err := a.reader.ReadString('\n')
+	if err != nil { return "", errors.Wrap(err, "read CAPTCHA token") }
 	token := strings.TrimSpace(line)
-	if token == "" {
-		return "", errors.New("CAPTCHA token is empty")
-	}
+	if token == "" { return "", errors.New("CAPTCHA token is empty") }
 	return token, nil
 }
 
 func (a *consoleAuthorizer) GetConfirmationCode(_ context.Context, phone string) (string, error) {
 	fmt.Printf("Введи SMS-код для %s: ", phone)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return "", errors.Wrap(err, "read SMS code")
-	}
+	line, err := a.reader.ReadString('\n')
+	if err != nil { return "", errors.Wrap(err, "read SMS code") }
 	code := strings.TrimSpace(line)
-	if code == "" {
-		return "", errors.New("SMS code is empty")
-	}
+	if code == "" { return "", errors.New("SMS code is empty") }
 	return code, nil
 }
 
@@ -196,106 +194,192 @@ func saveExport(path string, data *exportFile) error {
 	return nil
 }
 
-func exportReceipts(ctx context.Context, client *lkdr.Client, output string) error {
-	const pageSize = 50
-
-	result := &exportFile{
-		ExportedAt:      based.StandardClock.Now().UTC().Format("2006-01-02T15:04:05Z"),
-		DetailsComplete: true,
-		Receipts:        make([]exportedReceipt, 0),
+func loadExport(path string) (*exportFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) { return nil, nil }
+		return nil, errors.Wrap(err, "read previous export")
 	}
-	seen := make(map[string]struct{})
-	offset := 0
+	var result exportFile
+	if err := json.Unmarshal(data, &result); err != nil { return nil, errors.Wrap(err, "decode previous export") }
+	if result.Receipts == nil { result.Receipts = make([]exportedReceipt, 0) }
+	return &result, nil
+}
 
-	for {
-		page, err := client.Receipt(ctx, &lkdr.ReceiptIn{
-			Limit:   pageSize,
-			Offset:  offset,
-			OrderBy: "RECEIVE_DATE:DESC",
-		})
-		if err != nil {
-			return errors.Wrapf(err, "get receipts page at offset %d", offset)
+func exportReceipts(ctx context.Context, client *lkdr.Client, output, phone string) error {
+	const pageSize = 50
+	const detailTimeout = 60 * time.Second
+
+	result, err := loadExport(output)
+	if err != nil { return err }
+	if result == nil {
+		result = &exportFile{
+			ExportedAt: based.StandardClock.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			Receipts: make([]exportedReceipt, 0),
 		}
+	}
+	fmt.Printf("\nАккаунт %s\nФайл экспорта: %s\n", phone, output)
 
-		for _, receipt := range page.Receipts {
-			if receipt.Key == "" {
-				continue
-			}
-			if _, exists := seen[receipt.Key]; exists {
-				continue
-			}
-			seen[receipt.Key] = struct{}{}
-			result.Receipts = append(result.Receipts, exportedReceipt{Receipt: receipt})
+	if result.ListComplete {
+		fmt.Printf("Список чеков уже загружен: %d\n", len(result.Receipts))
+	} else {
+		fmt.Println("Загружаю список чеков...")
+		seen := make(map[string]struct{}, len(result.Receipts))
+		for _, item := range result.Receipts {
+			if item.Receipt.Key != "" { seen[item.Receipt.Key] = struct{}{} }
 		}
+		offset := 0
+		for {
+			if err := ctx.Err(); err != nil {
+				_ = saveExport(output, result)
+				return err
+			}
+			page, err := client.Receipt(ctx, &lkdr.ReceiptIn{
+				Limit: pageSize, Offset: offset, OrderBy: "RECEIVE_DATE:DESC",
+			})
+			if err != nil {
+				_ = saveExport(output, result)
+				return errors.Wrapf(err, "get receipts page at offset %d", offset)
+			}
+			for _, receipt := range page.Receipts {
+				if receipt.Key == "" { continue }
+				if _, exists := seen[receipt.Key]; exists { continue }
+				seen[receipt.Key] = struct{}{}
+				result.Receipts = append(result.Receipts, exportedReceipt{Receipt: receipt})
+			}
+			if err := saveExport(output, result); err != nil { return err }
+			offset += len(page.Receipts)
+			fmt.Printf("Получено записей: %d\n", len(result.Receipts))
+			if !page.HasMore || len(page.Receipts) == 0 { break }
+		}
+		result.ListComplete = true
+		if err := saveExport(output, result); err != nil { return err }
+		fmt.Printf("Список загружен: %d чеков\n", len(result.Receipts))
+	}
 
-		// Persist the receipt list while paging, so an interruption does not
-		// discard already downloaded data.
-		if err := saveExport(output, result); err != nil {
+	var successCount, errorCount, skippedCount int
+	for i := range result.Receipts {
+		if err := ctx.Err(); err != nil {
+			_ = saveExport(output, result)
 			return err
 		}
-
-		offset += len(page.Receipts)
-		if !page.HasMore || len(page.Receipts) == 0 {
-			break
-		}
-	}
-
-	result.ListComplete = true
-	if err := saveExport(output, result); err != nil {
-		return err
-	}
-
-	for i := range result.Receipts {
 		receipt := &result.Receipts[i]
-		details, err := client.FiscalData(ctx, &lkdr.FiscalDataIn{Key: receipt.Receipt.Key})
-		if err != nil {
-			receipt.DetailError = err.Error()
-			result.DetailsComplete = false
+		if receipt.FiscalData != nil {
+			successCount++
+			skippedCount++
+			continue
+		}
+		fmt.Printf("[%d/%d] Запрашиваю подробности чека %s...\n", i+1, len(result.Receipts), receipt.Receipt.Key)
+		requestCtx, cancel := context.WithTimeout(ctx, detailTimeout)
+		details, requestErr := client.FiscalData(requestCtx, &lkdr.FiscalDataIn{Key: receipt.Receipt.Key})
+		cancel()
+		if requestErr != nil {
+			receipt.FiscalData = nil
+			receipt.DetailError = requestErr.Error()
+			errorCount++
+			fmt.Printf("  Ошибка: %v\n", requestErr)
 		} else {
 			receipt.FiscalData = details
 			receipt.DetailError = ""
+			if details != nil {
+				successCount++
+				fmt.Println("  Подробности получены")
+			} else {
+				receipt.DetailError = "пустой ответ FiscalData"
+				errorCount++
+				fmt.Println("  API вернул пустые подробности")
+			}
 		}
-
-		if err := saveExport(output, result); err != nil {
-			return err
-		}
-		fmt.Printf("Обработано подробностей: %d/%d\n", i+1, len(result.Receipts))
+		if err := saveExport(output, result); err != nil { return err }
 	}
 
+	result.DetailsComplete = true
+	for _, item := range result.Receipts {
+		if item.FiscalData == nil { result.DetailsComplete = false; break }
+	}
+	if err := saveExport(output, result); err != nil { return err }
+	fmt.Printf("\nИтоги для %s:\n", phone)
+	fmt.Printf("Всего чеков: %d\n", len(result.Receipts))
+	fmt.Printf("Успешно загружено или уже было: %d\n", successCount)
+	fmt.Printf("Пропущено ранее загруженных: %d\n", skippedCount)
+	fmt.Printf("Ошибок в этой попытке: %d\n", errorCount)
+	fmt.Printf("Все подробности загружены: %t\n", result.DetailsComplete)
+	fmt.Printf("Файл: %s\n", output)
 	return nil
+}
+
+type accountConfig struct { Phone, DeviceID, UserAgent, OutputFile string }
+
+func runAccount(ctx context.Context, account accountConfig, tokensFile, legacyPhone string) error {
+	client, err := lkdr.NewClient(lkdr.ClientParams{
+		Phone: account.Phone,
+		Clock: based.StandardClock,
+		DeviceID: account.DeviceID,
+		UserAgent: account.UserAgent,
+		TokenStorage: jsonTokenStorage{path: tokensFile, legacyPhone: legacyPhone},
+	})
+	if err != nil { return errors.Wrap(err, "create LKDR client") }
+	accountCtx := lkdr.WithAuthorizer(ctx, newConsoleAuthorizer())
+	return exportReceipts(accountCtx, client, account.OutputFile, account.Phone)
 }
 
 func main() {
 	var config struct {
-		Phone      string `env:"LKDR_PHONE,required"`
+		Phone string `env:"LKDR_PHONE,required"`
 		TokensFile string `env:"LKDR_TOKENS_FILE,required"`
-		DeviceID   string `env:"LKDR_DEVICE_ID,required"`
-		UserAgent  string `env:"LKDR_USER_AGENT,required"`
+		DeviceID string `env:"LKDR_DEVICE_ID,required"`
+		UserAgent string `env:"LKDR_USER_AGENT,required"`
 		OutputFile string `env:"LKDR_OUTPUT_FILE" envDefault:"receipts.json"`
+		Phone2 string `env:"LKDR_PHONE_2"`
+		DeviceID2 string `env:"LKDR_DEVICE_ID_2"`
+		UserAgent2 string `env:"LKDR_USER_AGENT_2"`
+		OutputFile2 string `env:"LKDR_OUTPUT_FILE_2" envDefault:"receipts_phone2.json"`
 	}
-	if err := env.Parse(&config); err != nil {
-		panic(err)
-	}
-
-	client, err := lkdr.NewClient(lkdr.ClientParams{
-		Phone:        config.Phone,
-		Clock:        based.StandardClock,
-		DeviceID:     config.DeviceID,
-		UserAgent:    config.UserAgent,
-		TokenStorage: jsonTokenStorage{path: config.TokensFile},
-	})
-	if err != nil {
-		panic(err)
-	}
+	if err := env.Parse(&config); err != nil { panic(err) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ctx = lkdr.WithAuthorizer(ctx, &consoleAuthorizer{})
-
-	fmt.Println("Начинаю загрузку чеков и подробностей...")
-	if err := exportReceipts(ctx, client, config.OutputFile); err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка экспорта:", err)
+	accounts := []accountConfig{{
+		Phone: config.Phone, DeviceID: config.DeviceID,
+		UserAgent: config.UserAgent, OutputFile: config.OutputFile,
+	}}
+	if strings.TrimSpace(config.Phone2) != "" {
+		deviceID2 := config.DeviceID2
+		if deviceID2 == "" { deviceID2 = config.DeviceID }
+		userAgent2 := config.UserAgent2
+		if userAgent2 == "" { userAgent2 = config.UserAgent }
+		accounts = append(accounts, accountConfig{
+			Phone: config.Phone2, DeviceID: deviceID2,
+			UserAgent: userAgent2, OutputFile: config.OutputFile2,
+		})
+	}
+	seenPhones := make(map[string]struct{})
+	seenFiles := make(map[string]struct{})
+	for _, account := range accounts {
+		if _, exists := seenPhones[account.Phone]; exists {
+			fmt.Fprintf(os.Stderr, "Телефон %s указан более одного раза\n", account.Phone)
+			os.Exit(2)
+		}
+		seenPhones[account.Phone] = struct{}{}
+		if _, exists := seenFiles[filepath.Clean(account.OutputFile)]; exists {
+			fmt.Fprintf(os.Stderr, "Файл экспорта %s назначен нескольким аккаунтам\n", account.OutputFile)
+			os.Exit(2)
+		}
+		seenFiles[account.OutputFile] = struct{}{}
+	}
+	failed := 0
+	for _, account := range accounts {
+		fmt.Println("\n========================================")
+		fmt.Printf("Обработка телефона: %s\n", account.Phone)
+		fmt.Println("========================================")
+		if err := runAccount(ctx, account, config.TokensFile, config.Phone); err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "Ошибка аккаунта %s: %v\n", account.Phone, err)
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "\nЗавершено с ошибками. Неуспешных аккаунтов: %d\n", failed)
 		os.Exit(1)
 	}
-	fmt.Println("Экспорт завершён:", config.OutputFile)
+	fmt.Println("\nЭкспорт всех аккаунтов завершён.")
 }

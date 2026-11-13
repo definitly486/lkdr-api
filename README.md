@@ -35,7 +35,6 @@ sh ./install.sh "$HOME/lkdr-api"
 
 ```sh
 export LKDR_PHONE="твой_телефон"
-export LKDR_TOKENS_FILE="$HOME/.local/share/lkdr/tokens.json"
 export LKDR_DEVICE_ID="твой_sourceDeviceId"
 
 # Необязательно: второй номер
@@ -45,6 +44,7 @@ export LKDR_DEVICE_ID_2="$LKDR_DEVICE_ID"       # если отличается 
 
 Следующие значения уже заданы в программе постоянно и вручную экспортировать их не нужно:
 
+- `LKDR_TOKENS_FILE` — `$HOME/.local/share/lkdr/tokens.json` (каталог создаётся автоматически с правами `0700`, файл токенов — `0600`);
 - `LKDR_USER_AGENT` — `Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0`;
 - `LKDR_OUTPUT_FILE` — по умолчанию `$HOME/receipts.json`;
 - `LKDR_OUTPUT_FILE_2` — по умолчанию `$HOME/receipts_phone2.json`.

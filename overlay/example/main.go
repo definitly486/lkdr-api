@@ -405,15 +405,26 @@ func main() {
 		Phone       string `env:"LKDR_PHONE,required"`
 		TokensFile  string `env:"LKDR_TOKENS_FILE,required"`
 		DeviceID    string `env:"LKDR_DEVICE_ID,required"`
-		UserAgent   string `env:"LKDR_USER_AGENT,required"`
-		OutputFile  string `env:"LKDR_OUTPUT_FILE" envDefault:"receipts.json"`
+		UserAgent   string `env:"LKDR_USER_AGENT" envDefault:"Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0"`
+		OutputFile  string `env:"LKDR_OUTPUT_FILE"`
 		Phone2      string `env:"LKDR_PHONE_2"`
 		DeviceID2   string `env:"LKDR_DEVICE_ID_2"`
 		UserAgent2  string `env:"LKDR_USER_AGENT_2"`
-		OutputFile2 string `env:"LKDR_OUTPUT_FILE_2" envDefault:"receipts_phone2.json"`
+		OutputFile2 string `env:"LKDR_OUTPUT_FILE_2"`
 	}
 	if err := env.Parse(&config); err != nil {
 		panic(err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(errors.Wrap(err, "get home directory"))
+	}
+	if strings.TrimSpace(config.OutputFile) == "" {
+		config.OutputFile = filepath.Join(home, "receipts.json")
+	}
+	if strings.TrimSpace(config.OutputFile2) == "" {
+		config.OutputFile2 = filepath.Join(home, "receipts_phone2.json")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -403,7 +403,7 @@ func runAccount(ctx context.Context, account accountConfig, tokensFile, legacyPh
 func main() {
 	var config struct {
 		Phone       string `env:"LKDR_PHONE,required"`
-		TokensFile  string `env:"LKDR_TOKENS_FILE,required"`
+		TokensFile  string `env:"LKDR_TOKENS_FILE"`
 		DeviceID    string `env:"LKDR_DEVICE_ID,required"`
 		UserAgent   string `env:"LKDR_USER_AGENT" envDefault:"Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0"`
 		OutputFile  string `env:"LKDR_OUTPUT_FILE"`
@@ -419,6 +419,9 @@ func main() {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(errors.Wrap(err, "get home directory"))
+	}
+	if strings.TrimSpace(config.TokensFile) == "" {
+		config.TokensFile = filepath.Join(home, ".local", "share", "lkdr", "tokens.json")
 	}
 	if strings.TrimSpace(config.OutputFile) == "" {
 		config.OutputFile = filepath.Join(home, "receipts.json")

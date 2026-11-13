@@ -31,21 +31,25 @@ sh ./install.sh "$HOME/lkdr-api"
 
 ## Запуск
 
-Задай переменные окружения:
+Задай только обязательные параметры и данные аккаунтов:
 
 ```sh
 export LKDR_PHONE="твой_телефон"
 export LKDR_TOKENS_FILE="$HOME/.local/share/lkdr/tokens.json"
 export LKDR_DEVICE_ID="твой_sourceDeviceId"
-export LKDR_USER_AGENT="строка navigator.userAgent из Firefox"
-export LKDR_OUTPUT_FILE="$HOME/receipts.json"
 
 # Необязательно: второй номер
 export LKDR_PHONE_2="+7XXXXXXXXXX"
 export LKDR_DEVICE_ID_2="$LKDR_DEVICE_ID"       # если отличается — укажи свой
-export LKDR_USER_AGENT_2="$LKDR_USER_AGENT"     # если отличается — укажи свой
-export LKDR_OUTPUT_FILE_2="$HOME/receipts_phone2.json"
 ```
+
+Следующие значения уже заданы в программе постоянно и вручную экспортировать их не нужно:
+
+- `LKDR_USER_AGENT` — `Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0`;
+- `LKDR_OUTPUT_FILE` — по умолчанию `$HOME/receipts.json`;
+- `LKDR_OUTPUT_FILE_2` — по умолчанию `$HOME/receipts_phone2.json`.
+
+При необходимости любое из этих значений можно переопределить через переменную окружения. Для второго аккаунта `LKDR_USER_AGENT_2` автоматически наследуется от основного User-Agent, если отдельно не задан.
 
 Затем:
 
